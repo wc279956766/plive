@@ -1,0 +1,39 @@
+/* EasyCut-inspired dark theme */
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; height: 100%; background: #1e1e1e; color: #e6e6e6;
+  font-family: "Segoe UI", "Microsoft YaHei", sans-serif; font-size: 14px; }
+#app { min-height: 100vh; display: flex; flex-direction: column; }
+
+button { background: #2d2d2d; color: #e6e6e6; border: 1px solid #3c3c3c;
+  padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 13px;
+  transition: background .12s; }
+button:hover:not(:disabled) { background: #3a3a3a; }
+button:disabled { opacity: 0.4; cursor: not-allowed; }
+button.primary { background: #2d6cdf; border-color: #2d6cdf; color: #fff; }
+button.primary:hover:not(:disabled) { background: #4983e8; }
+button.danger { color: #d04444; }
+button.danger:hover:not(:disabled) { background: #3a2a2a; }
+button.link { background: none; border: none; color: #6da5ff; padding: 0; }
+button.link:hover { text-decoration: underline; }
+
+input, select { background: #2a2a2a; color: #e6e6e6; border: 1px solid #3c3c3c;
+  padding: 6px 10px; border-radius: 4px; font-size: 13px; outline: none; }
+input:focus, select:focus { border-color: #2d6cdf; }
+
+.muted { color: #888; }
+.row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+
+/* status badges */
+.badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px;
+  font-weight: 500; line-height: 1.4; }
+.badge.live { background: #2a4a2a; color: #80ffaa; }
+.badge.offline { background: #333; color: #aaa; }
+.badge.unknown { background: #3a2a4a; color: #c8a0ff; }
+
+/* table */
+table { width: 100%; border-collapse: collapse; background: #252525;
+  border: 1px solid #3c3c3c; border-radius: 4px; overflow: hidden; }
+th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid #2c2c2c; font-size: 13px; }
+th { background: #1a1a1a; color: #888; font-weight: 500; font-size: 12px; }
+tr:last-child td { border-bottom: none; }
+tr:hover td { background: #2c2c2c; }

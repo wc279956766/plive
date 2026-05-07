@@ -1,0 +1,20 @@
+{
+  "server": {
+    "host": "0.0.0.0",
+    "port": 9090
+  },
+  "paths": {
+    "recordingsDir": "./recordings",
+    "dataDir": "./data",
+    "binDir": "./bin"
+  },
+  "monitor": {
+    "intervalSec": 30
+  },
+  "retention": {
+    "recordingDays": 7
+  },
+  "bilibili": {
+    "uploadCookiePath": "./data/bilibili-cookie.json"
+  }
+}

@@ -1,0 +1,20 @@
+# 不复制运行时数据 / 构建产物 / IDE 杂项进 docker context
+node_modules/
+web/node_modules/
+web/dist/
+data/
+bin/
+config.json
+*.log
+
+.git/
+.gitignore
+.github/
+.vscode/
+.idea/
+.DS_Store
+
+# Docs 不进镜像
+README.md
+LICENSE
+deploy/

@@ -1,0 +1,28 @@
+node_modules/
+data/
+bin/
+config.json
+*.log
+
+# 任何含敏感信息的文件
+*cookie*.json
+data/**/*
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+
+# Web build artifacts
+web/dist/
+web/node_modules/
+
+# Python 缓存（如果以后用 Python 工具）
+__pycache__/
+*.pyc
+
+# 临时
+*.tmp
+*.bak
+.env
+.env.local

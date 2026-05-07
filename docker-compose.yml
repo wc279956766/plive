@@ -1,0 +1,22 @@
+services:
+  plive:
+    # 用 GHCR 镜像（push 到 main 后由 GitHub Actions 自动构建发布）：
+    #   image: ghcr.io/wc279956766/plive:latest
+    # 或者本地构建：
+    build: .
+    image: plive:latest
+    container_name: plive
+    restart: unless-stopped
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Asia/Shanghai
+      # 容器内录像存储路径（也作为容器视角的绝对路径写入 BR config）
+      - RECORDINGS_DIR=/data/recordings
+    ports:
+      - "9090:9090"
+    volumes:
+      # 持久化：sqlite + cookie + BR workdir + 切片
+      - ./data/config:/config
+      # 录像存储 (用宿主大盘 / 共享存储 / 网盘挂载点都行)
+      - ./data/recordings:/data/recordings
