@@ -41,8 +41,17 @@ async function loadVideoSource(url) {
       type: 'flv', url, isLive: false, hasAudio: true, hasVideo: true,
     }, {
       enableWorker: false,
-      enableStashBuffer: false,
-      lazyLoad: false,
+      // 大文件（10GB+）防止浏览器内存被打爆：
+      // - lazyLoad 只缓冲未来 3 分钟，seek 时按需 Range 拉
+      // - autoCleanupSourceBuffer 让 MSE 自动丢弃已播放 > 3 分钟的数据
+      // 这两条是关键，没开会 OOM 崩溃 tab。
+      enableStashBuffer: true,
+      lazyLoad: true,
+      lazyLoadMaxDuration: 180,
+      lazyLoadRecoverDuration: 30,
+      autoCleanupSourceBuffer: true,
+      autoCleanupMaxBackwardDuration: 180,
+      autoCleanupMinBackwardDuration: 60,
       seekType: 'range',
     });
     flvPlayer.on(flvjs.Events.ERROR, (type, detail, info) => {
