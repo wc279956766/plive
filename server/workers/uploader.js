@@ -4,6 +4,8 @@ import { db, now } from '../db.js';
 import { uploadFile, submitVideo } from '../bilibili/upload.js';
 import { renderTemplateObject, buildContext } from '../bilibili/template.js';
 import { loadCookies } from '../bilibili/auth.js';
+import { startProgress, updateProgress, finishProgress } from '../lib/uploadProgress.js';
+import { statSync } from 'node:fs';
 
 const POLL_INTERVAL_MS = 30_000;
 
@@ -30,6 +32,9 @@ async function processOne() {
   running = true;
   console.log(`[uploader] start id=${job.id} room=${job.room_id} file=${job.file_path}`);
   setStatus.run('uploading', null, null, job.id);
+  const progressKey = `rec:${job.id}`;
+  const totalBytes = (() => { try { return statSync(job.file_path).size; } catch { return 0; } })();
+  startProgress(progressKey, totalBytes);
   try {
     const tmpl = job.upload_template_json ? JSON.parse(job.upload_template_json) : {};
     const ctx = buildContext({
@@ -47,17 +52,22 @@ async function processOne() {
       coverUrl: '',                                      // Phase 3c 会处理
     };
     const t0 = Date.now();
-    const { uposUri } = await uploadFile(job.file_path, ({ percent }) => {
-      // 节流写库会很吵，简单 console
-      if (Math.floor(percent) % 10 === 0) console.log(`[uploader] id=${job.id} ${percent.toFixed(1)}%`);
+    const { uposUri } = await uploadFile(job.file_path, p => {
+      updateProgress(progressKey, p);
+      // 节流到 console，避免日志刷屏
+      if (p.percent !== undefined && Math.floor(p.percent) % 10 === 0)
+        console.log(`[uploader] id=${job.id} ${p.percent.toFixed(1)}%`);
     });
     const { bvid } = await submitVideo({ uposUri, ...meta });
     const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
     setStatus.run('success', `uploaded in ${elapsed}s, bvid=${bvid}`, bvid, job.id);
+    finishProgress(progressKey, { ok: true, bvid });
     console.log(`[uploader] done id=${job.id} bvid=${bvid}`);
   } catch (e) {
     console.error(`[uploader] failed id=${job.id}:`, e.message);
-    setStatus.run('failed', String(e.message || e).slice(0, 4000), null, job.id);
+    const msg = String(e.message || e).slice(0, 4000);
+    setStatus.run('failed', msg, null, job.id);
+    finishProgress(progressKey, { ok: false, error: msg });
   } finally {
     running = false;
   }

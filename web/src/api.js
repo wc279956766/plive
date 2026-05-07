@@ -33,4 +33,5 @@ export const api = {
   mergeSlices:   (data)          => req('/api/slices/merge', { method: 'POST', body: data }),
   sliceUploadDefaults: (id)      => req(`/api/slices/${id}/upload-defaults`),
   uploadSlice:   (id, meta)      => req(`/api/slices/${id}/upload`, { method: 'POST', body: meta }),
+  uploadProgress: ()             => req('/api/uploads/progress'),
 };

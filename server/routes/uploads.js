@@ -3,6 +3,9 @@ import { db, now } from '../db.js';
 import { loadCookies } from '../bilibili/auth.js';
 import { uploadFile, submitVideo } from '../bilibili/upload.js';
 import { renderTemplateObject, buildContext } from '../bilibili/template.js';
+import { startProgress, updateProgress, finishProgress, getProgress, listProgress }
+  from '../lib/uploadProgress.js';
+import { statSync } from 'node:fs';
 
 const findRecording = db.prepare(`
   SELECT r.*, rm.id AS r_room_id, rm.name AS r_room_name, rm.upload_template_json
@@ -62,19 +65,25 @@ export default async function routes(fastify) {
     if (!meta.title) return reply.code(400).send({ error: 'title 必填' });
 
     setStatus.run('uploading', null, null, id);
-    // 异步启动上传，立即返回；前端轮询 status
+    const key = `rec:${id}`;
+    const totalBytes = (() => { try { return statSync(job.file_path).size; } catch { return 0; } })();
+    startProgress(key, totalBytes);
+
     (async () => {
       try {
         const t0 = Date.now();
-        const { uposUri } = await uploadFile(job.file_path);
+        const { uposUri } = await uploadFile(job.file_path, p => updateProgress(key, p));
         const { bvid } = await submitVideo({ uposUri, ...meta });
         const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
         setStatus.run('success', `uploaded in ${elapsed}s, bvid=${bvid}`, bvid, id);
+        finishProgress(key, { ok: true, bvid });
       } catch (e) {
-        setStatus.run('failed', String(e.message || e).slice(0, 4000), null, id);
+        const msg = String(e.message || e).slice(0, 4000);
+        setStatus.run('failed', msg, null, id);
+        finishProgress(key, { ok: false, error: msg });
       }
     })();
-    return { ok: true, message: 'started, poll /api/recordings/:id for status' };
+    return { ok: true, message: 'started, poll /api/uploads/progress' };
   });
 
   // ---- 切片上传 ----
@@ -110,17 +119,39 @@ export default async function routes(fastify) {
     if (!meta.title) return reply.code(400).send({ error: 'title 必填' });
 
     setSliceStatus.run('uploading', null, null, id);
+    const key = `slice:${id}`;
+    const totalBytes = (() => { try { return statSync(slice.file_path).size; } catch { return 0; } })();
+    startProgress(key, totalBytes);
+
     (async () => {
       try {
         const t0 = Date.now();
-        const { uposUri } = await uploadFile(slice.file_path);
+        const { uposUri } = await uploadFile(slice.file_path, p => updateProgress(key, p));
         const { bvid } = await submitVideo({ uposUri, ...meta });
         const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
         setSliceStatus.run('success', `uploaded in ${elapsed}s, bvid=${bvid}`, bvid, id);
+        finishProgress(key, { ok: true, bvid });
       } catch (e) {
-        setSliceStatus.run('failed', String(e.message || e).slice(0, 4000), null, id);
+        const msg = String(e.message || e).slice(0, 4000);
+        setSliceStatus.run('failed', msg, null, id);
+        finishProgress(key, { ok: false, error: msg });
       }
     })();
     return { ok: true };
+  });
+
+  // ---- 进度查询 ----
+  // 一个端点拿全部，前端轮询时简单：
+  //   GET /api/uploads/progress       → { 'rec:12': {...}, 'slice:3': {...} }
+  fastify.get('/api/uploads/progress', async () => listProgress());
+
+  // 也提供单条查询
+  fastify.get('/api/uploads/progress/:kind/:id', async (req, reply) => {
+    const { kind, id } = req.params;
+    if (!['rec', 'slice'].includes(kind))
+      return reply.code(400).send({ error: 'kind must be rec or slice' });
+    const p = getProgress(`${kind}:${Number(id)}`);
+    if (!p) return reply.code(404).send({ error: 'no progress' });
+    return p;
   });
 }

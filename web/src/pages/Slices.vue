@@ -4,8 +4,10 @@ import { RouterLink } from 'vue-router';
 import { api } from '../api.js';
 
 const slices = ref([]);
+const progressMap = ref({});
 const error = ref('');
 let timer = null;
+let progressTimer = null;
 
 const dialog = ref(null);  // { sliceId, sliceTitle, meta, submitting, error }
 
@@ -38,6 +40,28 @@ async function refresh() {
   try { slices.value = await api.listSlices(); }
   catch (e) { error.value = e.message; }
 }
+async function refreshProgress() {
+  try { progressMap.value = await api.uploadProgress(); }
+  catch {}
+}
+
+function fmtSpeed(bps) {
+  if (!bps || bps < 1) return '';
+  const u = ['B/s','KB/s','MB/s','GB/s']; let i = 0; let v = bps;
+  while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
+  return `${v.toFixed(1)} ${u[i]}`;
+}
+function fmtEta(p) {
+  if (!p || !p.speedBytesPerSec || p.speedBytesPerSec < 1) return '';
+  const remain = (p.totalBytes - p.uploadedBytes) / p.speedBytesPerSec;
+  if (!isFinite(remain) || remain < 0) return '';
+  if (remain < 60) return `${Math.round(remain)}s`;
+  if (remain < 3600) return `${Math.round(remain / 60)}m`;
+  return `${(remain / 3600).toFixed(1)}h`;
+}
+function phaseLabel(phase) {
+  return ({ preupload: '准备', init: '初始化', uploading: '传输中', completing: '提交中' })[phase] || phase || '';
+}
 
 async function removeSlice(s) {
   if (!confirm(`确定删除切片 #${s.id} "${s.title || ''}"？\n（同时删除磁盘文件）`)) return;
@@ -66,8 +90,15 @@ async function submitUpload() {
   }
 }
 
-onMounted(() => { refresh(); timer = setInterval(refresh, 5000); });
-onUnmounted(() => { if (timer) clearInterval(timer); });
+onMounted(() => {
+  refresh(); refreshProgress();
+  timer = setInterval(refresh, 5000);
+  progressTimer = setInterval(refreshProgress, 2000);
+});
+onUnmounted(() => {
+  if (timer) clearInterval(timer);
+  if (progressTimer) clearInterval(progressTimer);
+});
 </script>
 
 <template>
@@ -103,8 +134,26 @@ onUnmounted(() => { if (timer) clearInterval(timer); });
             {{ s.burn_danmaku ? '带弹幕' : '纯净' }}
           </span>
         </td>
-        <td>
-          <span class="badge" :class="statusBadge(s.upload_status).cls">
+        <td class="upload-cell">
+          <template v-if="s.upload_status === 'uploading' && progressMap['slice:'+s.id]">
+            <div class="progress">
+              <div class="bar" :style="{ width: progressMap['slice:'+s.id].percent + '%' }"></div>
+            </div>
+            <div class="prog-meta muted">
+              <span>{{ phaseLabel(progressMap['slice:'+s.id].phase) }}</span>
+              <span>{{ progressMap['slice:'+s.id].percent.toFixed(1) }}%</span>
+              <span v-if="progressMap['slice:'+s.id].currentChunk">
+                {{ progressMap['slice:'+s.id].currentChunk }}/{{ progressMap['slice:'+s.id].totalChunks }}
+              </span>
+              <span v-if="fmtSpeed(progressMap['slice:'+s.id].speedBytesPerSec)">
+                {{ fmtSpeed(progressMap['slice:'+s.id].speedBytesPerSec) }}
+              </span>
+              <span v-if="fmtEta(progressMap['slice:'+s.id])">
+                {{ fmtEta(progressMap['slice:'+s.id]) }}
+              </span>
+            </div>
+          </template>
+          <span v-else class="badge" :class="statusBadge(s.upload_status).cls">
             {{ statusBadge(s.upload_status).text }}
           </span>
         </td>
@@ -166,6 +215,12 @@ onUnmounted(() => { if (timer) clearInterval(timer); });
 .empty { padding: 48px; text-align: center; }
 .small { font-size: 12px; }
 .action-cell { display: flex; gap: 6px; }
+
+.upload-cell { min-width: 200px; }
+.progress { width: 180px; height: 8px; background: #1a1a1a;
+            border: 1px solid #3c3c3c; border-radius: 3px; overflow: hidden; }
+.progress .bar { height: 100%; background: #2d8c3c; transition: width .4s ease; }
+.prog-meta { display: flex; gap: 8px; font-size: 11px; margin-top: 2px; flex-wrap: wrap; }
 
 .modal-mask { position: fixed; inset: 0; background: rgba(0,0,0,.6); display: flex;
   justify-content: center; align-items: center; z-index: 100; }

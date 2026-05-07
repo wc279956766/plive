@@ -165,20 +165,27 @@ export async function submitVideo({ uposUri, title, tid, tag, copyright, source,
  * 高层封装：上传一个本地文件 → 返回 upos_uri。再单独调 submitVideo。
  *
  * @param filePath 本地路径
- * @param onProgress({ uploadedBytes, totalBytes, percent })
+ * @param onProgress({ phase, uploadedBytes, totalBytes, percent, currentChunk, totalChunks })
+ *                  phase: 'preupload' | 'init' | 'uploading' | 'completing'
  */
 export async function uploadFile(filePath, onProgress = () => {}) {
   const st = await stat(filePath);
   const size = st.size;
   const filename = basename(filePath);
 
+  onProgress({ phase: 'preupload', uploadedBytes: 0, totalBytes: size, percent: 0 });
   const info = await preupload(filename, size);
+
+  onProgress({ phase: 'init', uploadedBytes: 0, totalBytes: size, percent: 0 });
   const uploadId = await initUpload(info);
 
   const chunkSize = info.chunkSize;
   const totalChunks = Math.ceil(size / chunkSize);
   let uploaded = 0;
 
+  // 用 info.threads 做 chunk 并发（preupload 给的，常见 3）。下面是简化的
+  // 顺序+重试版本（每个 chunk 5 次重试 + 1/2/4/8/16s 指数退避，专门扛 5xx 抽风）。
+  const MAX_CHUNK_RETRIES = 5;
   const fh = await open(filePath, 'r');
   try {
     for (let i = 0; i < totalChunks; i++) {
@@ -186,22 +193,32 @@ export async function uploadFile(filePath, onProgress = () => {}) {
       const thisChunkSize = Math.min(chunkSize, size - start);
       const buf = Buffer.alloc(thisChunkSize);
       await fh.read(buf, 0, thisChunkSize, start);
-      // 简单重试 3 次
+
       let lastErr = null;
-      for (let attempt = 0; attempt < 3; attempt++) {
+      for (let attempt = 0; attempt < MAX_CHUNK_RETRIES; attempt++) {
         try {
           await uploadChunk(info, uploadId, i, totalChunks, buf, size, start);
           lastErr = null; break;
         } catch (e) {
           lastErr = e;
-          await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
+          // 4xx 客户端错误一般是 token 失效之类，不重试
+          const m = String(e.message).match(/HTTP (\d+)/);
+          const code = m ? Number(m[1]) : 0;
+          if (code >= 400 && code < 500) break;
+          // 5xx / 网络错误：指数退避 1/2/4/8/16 秒
+          const wait = 1000 * Math.pow(2, attempt);
+          await new Promise(r => setTimeout(r, wait));
         }
       }
       if (lastErr) throw lastErr;
+
       uploaded += thisChunkSize;
       onProgress({
+        phase: 'uploading',
         uploadedBytes: uploaded,
         totalBytes: size,
+        currentChunk: i + 1,
+        totalChunks,
         percent: (uploaded / size) * 100,
       });
     }
@@ -209,6 +226,7 @@ export async function uploadFile(filePath, onProgress = () => {}) {
     await fh.close();
   }
 
+  onProgress({ phase: 'completing', uploadedBytes: size, totalBytes: size, percent: 100 });
   await completeUpload(info, uploadId, totalChunks, filename);
   return { uposUri: info.uposUri, filename };
 }
