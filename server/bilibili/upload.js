@@ -33,9 +33,14 @@ async function preupload(filename, size) {
   const uposParts = j.upos_uri.replace(/^upos:\/\//, '').split('/'); // ["ugcfx2lf", "n123456789.flv"]
   const bucket = uposParts[0];
   const objectName = uposParts.slice(1).join('/');
+  // preupload 一般返回多个候选 endpoint（不同 CDN 厂商的）。primary 节点抽风时
+  // init 阶段会自动 fallback 到下一个；chunk/complete 必须沿用同一个（已经 init 过）。
+  const endpoints = (j.endpoints && j.endpoints.length ? j.endpoints : [j.endpoint])
+    .map(e => 'https:' + e);
   return {
-    endpoint: 'https:' + j.endpoint,                // 拼成完整 https 域
-    uposPath: `/${bucket}/${objectName}`,           // PUT/POST 用的 path
+    endpoint: 'https:' + j.endpoint,                // 默认（首个）
+    endpoints,                                       // 全部候选
+    uposPath: `/${bucket}/${objectName}`,
     bucket,
     objectName,
     bizId: j.biz_id,
@@ -50,23 +55,36 @@ async function preupload(filename, size) {
 
 /**
  * Step 2: init multipart upload, 拿 upload_id。
+ * 主 endpoint 失败/超时（节点抽风）时自动尝试下一个 endpoint。
+ * @returns { uploadId, endpoint } 实际成功的 endpoint，后续 chunk/complete 沿用
  */
 async function initUpload(info) {
-  const url = `${info.endpoint}${info.uposPath}?uploads&output=json&${info.putQuery}`;
-  const r = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'X-Upos-Auth': info.auth,
-      'User-Agent': 'Mozilla/5.0 plive',
-    },
-  });
-  if (!r.ok) {
-    const body = await r.text().catch(() => '');
-    throw new Error(`init HTTP ${r.status}: ${body.slice(0, 500)}`);
+  let lastErr = null;
+  for (const endpoint of info.endpoints) {
+    const url = `${endpoint}${info.uposPath}?uploads&output=json&${info.putQuery}`;
+    try {
+      const r = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'X-Upos-Auth': info.auth,
+          'User-Agent': 'Mozilla/5.0 plive',
+        },
+        signal: AbortSignal.timeout(60_000),    // 60s 不响应 → 视为节点抽风换下一个
+      });
+      if (!r.ok) {
+        const body = await r.text().catch(() => '');
+        throw new Error(`init HTTP ${r.status}: ${body.slice(0, 300)}`);
+      }
+      const j = await r.json();
+      if (!j.upload_id) throw new Error(`init no upload_id: ${JSON.stringify(j)}`);
+      console.log(`[upload] init ok on ${endpoint}`);
+      return { uploadId: j.upload_id, endpoint };
+    } catch (e) {
+      lastErr = e;
+      console.warn(`[upload] init failed on ${endpoint}: ${e.message}, 尝试下一个 endpoint`);
+    }
   }
-  const j = await r.json();
-  if (!j.upload_id) throw new Error(`init no upload_id: ${JSON.stringify(j)}`);
-  return j.upload_id;
+  throw new Error(`init failed on all ${info.endpoints.length} endpoints: ${lastErr?.message}`);
 }
 
 /**
@@ -89,6 +107,7 @@ async function uploadChunk(info, uploadId, chunkIndex, totalChunks, chunk, fileT
       'User-Agent': 'Mozilla/5.0 plive',
     },
     body: chunk,
+    signal: AbortSignal.timeout(180_000),     // 单个 chunk 3 分钟超时（10MB 大）
   });
   if (!r.ok) {
     const body = await r.text().catch(() => '');
@@ -119,6 +138,7 @@ async function completeUpload(info, uploadId, totalChunks, filename) {
       'User-Agent': 'Mozilla/5.0 plive',
     },
     body: JSON.stringify({ parts }),
+    signal: AbortSignal.timeout(60_000),
   });
   if (!r.ok) {
     const body = await r.text().catch(() => '');
@@ -177,7 +197,9 @@ export async function uploadFile(filePath, onProgress = () => {}) {
   const info = await preupload(filename, size);
 
   onProgress({ phase: 'init', uploadedBytes: 0, totalBytes: size, percent: 0 });
-  const uploadId = await initUpload(info);
+  const { uploadId, endpoint: pickedEndpoint } = await initUpload(info);
+  // 把 info.endpoint 切换成实际成功的那个，后续 chunk/complete 沿用
+  info.endpoint = pickedEndpoint;
 
   const chunkSize = info.chunkSize;
   const totalChunks = Math.ceil(size / chunkSize);
@@ -195,7 +217,22 @@ export async function uploadFile(filePath, onProgress = () => {}) {
       await fh.read(buf, 0, thisChunkSize, start);
 
       let lastErr = null;
+      let attemptUsed = 0;
       for (let attempt = 0; attempt < MAX_CHUNK_RETRIES; attempt++) {
+        attemptUsed = attempt + 1;
+        // 重试时也把 attempt 数据吐给 UI
+        if (attempt > 0) {
+          onProgress({
+            phase: 'uploading',
+            uploadedBytes: uploaded,
+            totalBytes: size,
+            currentChunk: i + 1,
+            totalChunks,
+            currentChunkAttempt: attempt + 1,
+            maxChunkAttempts: MAX_CHUNK_RETRIES,
+            percent: (uploaded / size) * 100,
+          });
+        }
         try {
           await uploadChunk(info, uploadId, i, totalChunks, buf, size, start);
           lastErr = null; break;
@@ -219,6 +256,8 @@ export async function uploadFile(filePath, onProgress = () => {}) {
         totalBytes: size,
         currentChunk: i + 1,
         totalChunks,
+        currentChunkAttempt: attemptUsed,
+        maxChunkAttempts: MAX_CHUNK_RETRIES,
         percent: (uploaded / size) * 100,
       });
     }
