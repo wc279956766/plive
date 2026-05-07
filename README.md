@@ -1,28 +1,27 @@
 # plive
 
-B 站直播全自动录制 → 上传 → 切片管理的 Web 服务，单 Node.js 进程跑全套。
+B 站直播全自动录制 → 上传 → 切片管理的 Web 服务。
 
-面向自托管服务器场景，不是给一般家用机用户的："你能拿到 cookie，能编辑配置文件" 是基本前提。
+面向自托管服务器场景。
 
 ## 主要功能
 
 - **房间监控**：周期轮询 B 站 API，识别开/关播
 - **自动录制**：开播后调 [BililiveRecorder.Cli](https://github.com/BililiveRecorder/BililiveRecorder) 录制，带 cookie 解锁原画/4K/杜比
-- **自动上传**：录完后用 cookie 走 UPOS 协议直传 B 站，房间级模板渲染元数据
-- **切片器**：从录像选起止时间点切一段，可选无损纯净（快）或烧入弹幕（重编码慢）
+- **自动上传**：录完后用 cookie 走 UPOS 协议直传 B 站
+- **切片器**：从录像选起止时间点切一段，可选无损纯净或烧入弹幕
 - **三切一合并**：多个切片排序后无损 concat 成一个视频
 - **手动上传**：每段录像/切片都能弹窗里改标题、tag、简介、版权后再投
-- **本地保留 7 天**：上传成功的录像自动清理本地 `.flv` 和 `.xml`，切片永远手动删
+- **本地保留 7 天**：上传成功的录像自动清理本地 `.flv` 和 `.xml`
 
 ## 技术栈
 
 - **后端**：Node.js 20+ / Fastify 5 / better-sqlite3
 - **前端**：Vue 3 + Vite + Vue Router
-- **第三方二进制**（自动下载到 `bin/`）：
+- **第三方二进制**：
   - [BililiveRecorder.Cli](https://github.com/BililiveRecorder/BililiveRecorder) — 录制
   - [DanmakuFactory](https://github.com/hihkm/DanmakuFactory) — 弹幕 xml→ass
   - ffmpeg / ffprobe — 来自 `ffmpeg-static` / `ffprobe-static` npm 包
-- **B 站上传**：自己用 Node 实现 UPOS 协议（preupload + 分片 PUT + complete + submit），不依赖外部 biliup 二进制
 
 ## 快速开始
 
@@ -262,11 +261,6 @@ cd web && npm run dev
 - 上传失败不会自动重试，需要在 `/library` 手动点 `上传`
 - 切片合并不支持烧弹幕（合并的是已成切片的，弹幕信息已与源解耦）。要带弹幕的合并版，先各段都烧弹幕、再合并
 
-## 安全注意
-
-- `data/bilibili-cookie.json` 含敏感凭据，**不要提交到 git**（已在 `.gitignore`）
-- 服务器若暴露公网，建议套反代+认证；Web UI 自身没鉴权
-- BR Cli 的 webhook 端点 `/api/recorder/webhook` 信任 localhost 调用，没鉴权——别让外网能直接 POST 到这上面（反代里挡掉）
 
 ## 致谢
 
