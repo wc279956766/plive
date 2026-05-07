@@ -5,6 +5,8 @@ import { uploadFile, submitVideo } from '../bilibili/upload.js';
 import { renderTemplateObject, buildContext } from '../bilibili/template.js';
 import { startProgress, updateProgress, finishProgress, getProgress, listProgress }
   from '../lib/uploadProgress.js';
+import { findMergeCandidates, mergeRecordings, cleanupMerged, DEFAULT_GAP_SEC }
+  from '../lib/recordingMerge.js';
 import { statSync } from 'node:fs';
 
 const findRecording = db.prepare(`
@@ -50,8 +52,21 @@ export default async function routes(fastify) {
   });
 
   /**
-   * 手动触发上传（同步阻塞，用于小文件 / 调试。生产场景走 worker）。
-   * Body: { title, tid, tag, desc, copyright, source }
+   * 查询某段录像的相邻段（用于上传弹窗里展示"是否合并"）。
+   * 返回结果含 seed 自身。
+   */
+  fastify.get('/api/recordings/:id/merge-candidates', async (req, reply) => {
+    const id = Number(req.params.id);
+    const seed = findRecording.get(id);
+    if (!seed) return reply.code(404).send({ error: 'not found' });
+    const gap = Math.max(1, Number(req.query?.gap || DEFAULT_GAP_SEC));
+    const chain = findMergeCandidates(id, gap);
+    return { gap_sec: gap, candidates: chain };
+  });
+
+  /**
+   * 触发上传（异步），可选指定 merge_recording_ids 把多段合并后上传。
+   * Body: { title, tid, tag, desc, copyright, source, merge_recording_ids?: number[] }
    */
   fastify.post('/api/recordings/:id/upload', async (req, reply) => {
     const id = Number(req.params.id);
@@ -64,26 +79,58 @@ export default async function routes(fastify) {
     const meta = req.body || {};
     if (!meta.title) return reply.code(400).send({ error: 'title 必填' });
 
-    setStatus.run('uploading', null, null, id);
+    // 计算合并集（含 seed 自身）。前端可通过 merge_recording_ids 指定要合并哪些
+    let mergeIds = Array.isArray(meta.merge_recording_ids) ? meta.merge_recording_ids : [id];
+    if (!mergeIds.includes(id)) mergeIds = [id, ...mergeIds];
+    const mergeRecs = mergeIds
+      .map(rid => findRecording.get(rid))
+      .filter(Boolean);
+    if (mergeRecs.length !== mergeIds.length) {
+      return reply.code(400).send({ error: 'merge_recording_ids 中有不存在的 id' });
+    }
+    // 排序：按 started_at 升序合并
+    mergeRecs.sort((a, b) => a.started_at - b.started_at);
+    const willMerge = mergeRecs.length > 1;
+
+    // 全部置 uploading
+    for (const r of mergeRecs) setStatus.run('uploading', null, null, r.id);
+
     const key = `rec:${id}`;
-    const totalBytes = (() => { try { return statSync(job.file_path).size; } catch { return 0; } })();
+    const totalBytes = mergeRecs.reduce((s, r) => {
+      try { return s + statSync(r.file_path).size; } catch { return s; }
+    }, 0);
     startProgress(key, totalBytes);
 
     (async () => {
+      let merged = null;
       try {
         const t0 = Date.now();
-        const { uposUri } = await uploadFile(job.file_path, p => updateProgress(key, p));
+        let uploadPath = job.file_path;
+        if (willMerge) {
+          updateProgress(key, { phase: 'merging' });
+          merged = await mergeRecordings(mergeRecs, (subPhase, percent) => {
+            updateProgress(key, { phase: 'merging', percent: Math.min(percent || 0, 99) });
+          });
+          uploadPath = merged.flvPath;
+        }
+        const { uposUri } = await uploadFile(uploadPath, p => updateProgress(key, p));
         const { bvid } = await submitVideo({ uposUri, ...meta });
         const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
-        setStatus.run('success', `uploaded in ${elapsed}s, bvid=${bvid}`, bvid, id);
+        const log = willMerge
+          ? `merged ${mergeRecs.map(r => r.id).join(',')} → uploaded in ${elapsed}s, bvid=${bvid}`
+          : `uploaded in ${elapsed}s, bvid=${bvid}`;
+        // 所有参与合并的录像都打同一 bvid
+        for (const r of mergeRecs) setStatus.run('success', log, bvid, r.id);
         finishProgress(key, { ok: true, bvid });
       } catch (e) {
         const msg = String(e.message || e).slice(0, 4000);
-        setStatus.run('failed', msg, null, id);
+        for (const r of mergeRecs) setStatus.run('failed', msg, null, r.id);
         finishProgress(key, { ok: false, error: msg });
+      } finally {
+        if (merged) cleanupMerged(merged);
       }
     })();
-    return { ok: true, message: 'started, poll /api/uploads/progress' };
+    return { ok: true, willMerge, mergeIds: mergeRecs.map(r => r.id) };
   });
 
   // ---- 切片上传 ----

@@ -8,6 +8,38 @@ import { config } from './config.js';
 const DF_BIN = resolve(config.paths.binDir, 'DanmakuFactory');
 
 /**
+ * 合并多个 xml：把每段的 <d p="time,..."> 时间戳偏移加上累计时长，再串起来。
+ * @param xmlPaths 按时间顺序的 xml 路径数组
+ * @param durations 各段时长（秒）— 长度与 xmlPaths 对齐
+ * @param outPath  输出 xml 路径
+ */
+export function mergeXmls({ xmlPaths, durations, outPath }) {
+  if (xmlPaths.length !== durations.length) {
+    throw new Error('xmlPaths and durations length mismatch');
+  }
+  const re = /<d\s+p="([^"]+)"([^>]*)>([\s\S]*?)<\/d>/g;
+  const out = [];
+  let offset = 0;
+  for (let i = 0; i < xmlPaths.length; i++) {
+    const xml = readFileSync(xmlPaths[i], 'utf8');
+    let m;
+    while ((m = re.exec(xml)) !== null) {
+      const fields = m[1].split(',');
+      const t = parseFloat(fields[0]);
+      if (!isFinite(t)) continue;
+      fields[0] = (t + offset).toFixed(3);
+      out.push(`<d p="${fields.join(',')}"${m[2]}>${m[3]}</d>`);
+    }
+    offset += durations[i] || 0;
+  }
+  mkdirSync(dirname(outPath), { recursive: true });
+  writeFileSync(outPath,
+    `<?xml version="1.0" encoding="UTF-8"?>\n<i>\n  <chatserver>chat.bilibili.com</chatserver>\n  <chatid>0</chatid>\n` +
+    out.join('\n') + '\n</i>\n');
+  return out.length;
+}
+
+/**
  * 切片 xml：保留 [startSec, endSec] 内的弹幕，时间戳偏移到 0 起。
  * Bilibili xml 弹幕：<d p="time(s),mode,fontsize,color,sendDate,pool,userHash,rowID">text</d>
  */

@@ -65,6 +65,7 @@ function fmtEta(p) {
 }
 function phaseLabel(phase) {
   return ({
+    merging:    '合并中',
     preupload:  '准备',
     init:       '初始化',
     uploading:  '传输中',
@@ -74,19 +75,45 @@ function phaseLabel(phase) {
 
 async function openUploadDialog(rec) {
   try {
-    const meta = await api.uploadDefaults(rec.id);
-    dialog.value = { recId: rec.id, recName: rec.file_path?.split('/').slice(-1)[0],
-                     meta, submitting: false, error: '' };
+    const [meta, mergeRes] = await Promise.all([
+      api.uploadDefaults(rec.id),
+      api.mergeCandidates(rec.id, 180).catch(() => ({ candidates: [rec] })),
+    ]);
+    const candidates = mergeRes.candidates || [rec];
+    // 默认全部勾选（含 seed 自身）
+    const selectedIds = candidates.map(c => c.id);
+    dialog.value = {
+      recId: rec.id,
+      recName: rec.file_path?.split('/').slice(-1)[0],
+      meta,
+      candidates,
+      selectedIds,
+      submitting: false,
+      error: '',
+    };
   } catch (e) {
     alert('获取默认值失败：' + e.message);
   }
+}
+
+function toggleMergeId(id) {
+  if (!dialog.value) return;
+  // seed 自身不能取消
+  if (id === dialog.value.recId) return;
+  const i = dialog.value.selectedIds.indexOf(id);
+  if (i >= 0) dialog.value.selectedIds.splice(i, 1);
+  else dialog.value.selectedIds.push(id);
 }
 
 async function submitUpload() {
   if (!dialog.value) return;
   dialog.value.submitting = true; dialog.value.error = '';
   try {
-    await api.uploadRecording(dialog.value.recId, dialog.value.meta);
+    const meta = { ...dialog.value.meta };
+    if (dialog.value.selectedIds && dialog.value.selectedIds.length > 1) {
+      meta.merge_recording_ids = dialog.value.selectedIds;
+    }
+    await api.uploadRecording(dialog.value.recId, meta);
     dialog.value = null;
     refresh();
   } catch (e) {
@@ -140,6 +167,9 @@ onUnmounted(() => {
               <span v-if="progressMap['rec:'+r.id].currentChunk">
                 {{ progressMap['rec:'+r.id].currentChunk }}/{{ progressMap['rec:'+r.id].totalChunks }}
               </span>
+              <span v-if="progressMap['rec:'+r.id].currentChunkAttempt > 1" class="retry">
+                ⟳{{ progressMap['rec:'+r.id].currentChunkAttempt }}/{{ progressMap['rec:'+r.id].maxChunkAttempts }}
+              </span>
               <span v-if="fmtSpeed(progressMap['rec:'+r.id].speedBytesPerSec)">
                 {{ fmtSpeed(progressMap['rec:'+r.id].speedBytesPerSec) }}
               </span>
@@ -177,6 +207,21 @@ onUnmounted(() => {
     <div class="modal">
       <h3>上传到 B 站</h3>
       <p class="muted small">{{ dialog.recName }}</p>
+
+      <!-- 自动合并相邻段提示（≥2 段才显示）-->
+      <div v-if="dialog.candidates && dialog.candidates.length > 1" class="merge-box">
+        <div class="merge-title">检测到同会话相邻段（默认全部合并上传）</div>
+        <div v-for="c in dialog.candidates" :key="c.id" class="merge-row">
+          <label class="inline">
+            <input type="checkbox"
+                   :checked="dialog.selectedIds.includes(c.id)"
+                   :disabled="c.id === dialog.recId"
+                   @change="toggleMergeId(c.id)" />
+            <span>#{{ c.id }} · {{ fmtTime(c.started_at) }}–{{ fmtTime(c.ended_at) }}
+                  · {{ fmtSize(c.size_bytes) }}{{ c.id === dialog.recId ? ' (主)' : '' }}</span>
+          </label>
+        </div>
+      </div>
 
       <label>标题</label>
       <input v-model="dialog.meta.title" placeholder="必填" />
@@ -236,4 +281,12 @@ onUnmounted(() => {
             border: 1px solid #3c3c3c; border-radius: 3px; overflow: hidden; }
 .progress .bar { height: 100%; background: #2d8c3c; transition: width .4s ease; }
 .prog-meta { display: flex; gap: 8px; font-size: 11px; margin-top: 2px; flex-wrap: wrap; }
+.prog-meta .retry { color: #ffb84d; }
+
+.merge-box { background: #1f2a1f; border: 1px solid #3c5c3c; border-radius: 4px;
+             padding: 8px 12px; margin: 12px 0; }
+.merge-title { font-size: 12px; color: #80ff80; margin-bottom: 4px; }
+.merge-row { font-size: 12px; color: #ddd; padding: 2px 0; }
+.merge-row .inline { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+.merge-row input[disabled] { opacity: .6; }
 </style>
