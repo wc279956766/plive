@@ -10,6 +10,10 @@ import { biliFetch, biliJson, getCsrf } from './client.js';
 // 注意：ugcfx/bup 会被 bilibili 路由到 ugcfxever bucket（bupfetch 协议），不接受 multipart init。
 const PROFILE = 'ugcupos/bup';
 
+// 上行 CDN 偏好。可选: bda2（百度云）/ alia（阿里云）/ txa（腾讯云）。
+// 国内默认 bda2 即可；海外用户走阿里走得更稳。可以通过环境变量 PLIVE_UPLOAD_CDN 覆盖。
+const PREFERRED_CDN = process.env.PLIVE_UPLOAD_CDN || 'alia';
+
 /**
  * Step 1: 询问 upload server。
  */
@@ -22,7 +26,7 @@ async function preupload(filename, size) {
   url.searchParams.set('ssl', '0');
   url.searchParams.set('version', '2.10.4');
   url.searchParams.set('build', '2100400');
-  url.searchParams.set('upcdn', 'bda2');
+  url.searchParams.set('upcdn', PREFERRED_CDN);
   url.searchParams.set('probe_version', '20221109');
   const r = await biliFetch(url.toString());
   if (!r.ok) throw new Error(`preupload HTTP ${r.status}`);
@@ -35,11 +39,16 @@ async function preupload(filename, size) {
   const objectName = uposParts.slice(1).join('/');
   // preupload 一般返回多个候选 endpoint（不同 CDN 厂商的）。primary 节点抽风时
   // init 阶段会自动 fallback 到下一个；chunk/complete 必须沿用同一个（已经 init 过）。
-  const endpoints = (j.endpoints && j.endpoints.length ? j.endpoints : [j.endpoint])
+  // 把 PREFERRED_CDN 对应的 endpoint 排到最前（B 站可能不一定按我们 upcdn 参数排序）。
+  const rawEndpoints = (j.endpoints && j.endpoints.length ? j.endpoints : [j.endpoint])
     .map(e => 'https:' + e);
+  const endpoints = [
+    ...rawEndpoints.filter(e => e.includes(PREFERRED_CDN)),
+    ...rawEndpoints.filter(e => !e.includes(PREFERRED_CDN)),
+  ];
   return {
-    endpoint: 'https:' + j.endpoint,                // 默认（首个）
-    endpoints,                                       // 全部候选
+    endpoint: endpoints[0],                          // 偏好的 CDN 排第一
+    endpoints,                                       // 全部候选（偏好的优先）
     uposPath: `/${bucket}/${objectName}`,
     bucket,
     objectName,
