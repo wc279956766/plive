@@ -22,6 +22,15 @@ function destroyFlvPlayer() {
     try { flvPlayer.pause(); flvPlayer.unload(); flvPlayer.detachMediaElement(); flvPlayer.destroy(); } catch {}
     flvPlayer = null;
   }
+  // 关键：detachMediaElement 不释放 MSE source buffer，必须显式清 src + reload
+  // 不然多次切换录像会累积泄漏 MSE 内存，最终 tab OOM。
+  if (video.value) {
+    try {
+      video.value.pause();
+      video.value.removeAttribute('src');
+      video.value.load();
+    } catch {}
+  }
 }
 
 async function loadVideoSource(url) {
@@ -99,6 +108,13 @@ function selectRecording(id) {
   setTimeout(() => loadVideoSource(`/api/recordings/${id}/stream`), 0);
 }
 
+function reloadPlayer() {
+  // 强制释放当前 player + MSE buffer，再重新 attach
+  if (recordingId.value) {
+    setTimeout(() => loadVideoSource(`/api/recordings/${recordingId.value}/stream`), 0);
+  }
+}
+
 function setIn() { if (video.value) inMark.value = video.value.currentTime; }
 function setOut() { if (video.value) outMark.value = video.value.currentTime; }
 function jumpTo(t) { if (video.value) video.value.currentTime = t; }
@@ -174,6 +190,7 @@ onUnmounted(() => {
           [{{ r.room_id }}] {{ r.room_name }} — {{ new Date(r.started_at*1000).toLocaleString('zh-CN', { hour12: false }) }}
         </option>
       </select>
+      <button v-if="recordingId" class="muted-btn" @click="reloadPlayer" title="如果播放卡死或崩溃，点这个">↻ 重载播放器</button>
     </header>
 
     <main v-if="recording" class="player-area">
