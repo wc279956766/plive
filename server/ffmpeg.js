@@ -31,10 +31,11 @@ export function probeDuration(filePath) {
  * 跑 ffmpeg，捕获 stderr 解析进度。
  * @param totalSec 用于计算 percent
  * @param onProgress({ percent, currentSec })
+ * @param ffmpegPath 默认用 ffmpeg-static 包；硬件编码场景传系统 ffmpeg 路径
  */
-export function runFfmpeg(args, totalSec = 0, onProgress = () => {}) {
+export function runFfmpeg(args, totalSec = 0, onProgress = () => {}, ffmpegPath = FFMPEG) {
   return new Promise((resolve) => {
-    const p = spawn(FFMPEG, args);
+    const p = spawn(ffmpegPath, args);
     let log = '';
     p.stderr.on('data', d => {
       const s = d.toString();

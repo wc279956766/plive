@@ -95,6 +95,31 @@ npm start
 }
 ```
 
+### 上传前转码（默认开启）
+
+录制完成后默认会按 B 站「1080P 60帧」档参数转码再上传（H.264 high@4.1 / 60fps / yuv420p / AAC 48k 320k）。
+
+环境变量调节：
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `PLIVE_TRANSCODE` | `1` | 设 `0` 关闭转码（直传源 .flv） |
+| `PLIVE_TRANSCODE_USE_VAAPI` | `1` | 设 `0` 强制 CPU 编码 |
+| `PLIVE_TRANSCODE_VAAPI_QP` | `23` | VAAPI CQP 模式 QP 值（越大码率越低） |
+| `PLIVE_TRANSCODE_PRESET` | `medium` | CPU libx264 preset（fast/veryfast 提速） |
+| `PLIVE_TRANSCODE_CRF` | `18` | CPU libx264 CRF |
+| `PLIVE_VAAPI_DEVICE` | `/dev/dri/renderD128` | VAAPI render node |
+| `PLIVE_SYSTEM_FFMPEG` | `/usr/bin/ffmpeg` | 系统 ffmpeg 路径（VAAPI 编码用） |
+| `PLIVE_UPLOAD_CDN` | `alia` | UPOS 偏好 CDN：`bda2`/`alia`/`txa` |
+
+**GPU 加速（推荐）**：用 Intel iGPU 走 VAAPI，需要满足：
+1. 有 `/dev/dri/renderD128` 设备
+2. 系统装了带 VAAPI 的 ffmpeg：`sudo apt install -y ffmpeg vainfo`
+3. 跑 plive 的用户在 `render` 组：`sudo usermod -aG render,video $USER`（重新登录或用 systemd 的 `SupplementaryGroups=render video`）
+4. 启动后日志里看到 `[transcoder] using VAAPI (Intel iGPU)`
+
+VAAPI 速度大约 **2.5x 实时**（4 小时录像 ~1.5 小时编完）；CPU `medium` 大约 1x 实时。
+
 ## 使用流程
 
 ### 1. 登录 B 站

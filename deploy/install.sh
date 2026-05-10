@@ -104,6 +104,8 @@ After=network.target
 [Service]
 Type=simple
 User=$USER_NAME
+# 让进程拿到 render/video 组：访问 /dev/dri/* 才能用 Intel iGPU 做 VAAPI 转码
+SupplementaryGroups=render video
 WorkingDirectory=$PROJECT_ROOT
 ExecStart=$NODE_BIN $PROJECT_ROOT/server/index.js
 Restart=always
