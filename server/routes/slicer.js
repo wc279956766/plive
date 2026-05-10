@@ -3,7 +3,6 @@ import { db, now } from '../db.js';
 import { config } from '../config.js';
 import { sliceLossless, concatLossless, sliceWithDanmakuBurn } from '../ffmpeg.js';
 import { prepareDanmakuAss, guessXmlPath } from '../danmaku.js';
-import { generateProxy, getProxyState, proxyPathFor } from '../lib/proxy.js';
 import { existsSync, unlinkSync } from 'node:fs';
 import { mkdirSync, statSync } from 'node:fs';
 import { resolve, basename, dirname, extname } from 'node:path';
@@ -33,35 +32,6 @@ export default async function routes(fastify) {
     return reply.sendFile(basename(rec.file_path), dirname(rec.file_path));
   });
 
-  // 切片器代理预览：480p mp4，浏览器原生播，避免大 FLV 走 flv.js OOM。
-  // 第一次访问触发后台生成，前端轮询 /proxy/status。
-  fastify.get('/api/recordings/:id/proxy', async (req, reply) => {
-    const rec = findRec.get(req.params.id);
-    if (!rec) return reply.code(404).send({ error: 'not found' });
-    const state = getProxyState(rec.id);
-    if (state.state === 'ready') {
-      return reply.sendFile(basename(state.path), dirname(state.path));
-    }
-    return reply.code(404).send({ error: 'proxy not ready', state });
-  });
-
-  fastify.get('/api/recordings/:id/proxy/status', async (req, reply) => {
-    const rec = findRec.get(req.params.id);
-    if (!rec) return reply.code(404).send({ error: 'not found' });
-    return getProxyState(rec.id);
-  });
-
-  fastify.post('/api/recordings/:id/proxy', async (req, reply) => {
-    const rec = findRec.get(req.params.id);
-    if (!rec) return reply.code(404).send({ error: 'not found' });
-    if (!existsSync(rec.file_path)) return reply.code(410).send({ error: 'source file gone' });
-    try {
-      await generateProxy(rec.id, rec.file_path);
-      return getProxyState(rec.id);
-    } catch (e) {
-      return reply.code(500).send({ error: e.message });
-    }
-  });
 
   // 创建一个切片
   fastify.post('/api/slices', async (req, reply) => {

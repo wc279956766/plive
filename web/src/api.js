@@ -35,6 +35,4 @@ export const api = {
   uploadSlice:   (id, meta)      => req(`/api/slices/${id}/upload`, { method: 'POST', body: meta }),
   uploadProgress: ()             => req('/api/uploads/progress'),
   mergeCandidates:(recId, gap=180)=> req(`/api/recordings/${recId}/merge-candidates?gap=${gap}`),
-  proxyStatus:   (recId)         => req(`/api/recordings/${recId}/proxy/status`),
-  proxyGenerate: (recId)         => req(`/api/recordings/${recId}/proxy`, { method: 'POST' }),
 };
