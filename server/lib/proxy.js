@@ -48,6 +48,8 @@ export async function generateProxy(recId, sourcePath) {
         '-c', 'copy',
         // fragmented MP4：moov 在前 + 分片帧，浏览器原生支持流式播放和 Range seek
         '-movflags', '+frag_keyframe+empty_moov+default_base_moof',
+        // 必须显式 -f mp4：tmp 文件名后缀是 .mp4.tmp，ffmpeg 猜不出 muxer
+        '-f', 'mp4',
         tmp,
       ], totalSec, ({ percent }) => { job.percent = percent || 0; });
       if (!r.ok) {
