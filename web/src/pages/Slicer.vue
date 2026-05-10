@@ -34,13 +34,18 @@ async function loadVideoSource(url) {
     }, {
       enableWorker: false,
       // 极保守缓冲（大文件防 OOM）：缓冲 ~120s 视频量
+      // 大文件（10GB+）防止浏览器内存被打爆：
+      // - lazyLoad 只缓冲未来 3 分钟，seek 时按需 Range 拉
+      // - autoCleanupSourceBuffer 让 MSE 自动丢弃已播放 > 3 分钟的数据
+      // 注意：窗口不能太小，太小会让 MSE buffer 频繁 alloc/free 反而碎片化爆内存。
+      // 180s 是经过实测稳定的值（10-15GB 文件可流畅 seek）。
       enableStashBuffer: true,
       lazyLoad: true,
-      lazyLoadMaxDuration: 60,
-      lazyLoadRecoverDuration: 20,
+      lazyLoadMaxDuration: 180,
+      lazyLoadRecoverDuration: 30,
       autoCleanupSourceBuffer: true,
-      autoCleanupMaxBackwardDuration: 60,
-      autoCleanupMinBackwardDuration: 30,
+      autoCleanupMaxBackwardDuration: 180,
+      autoCleanupMinBackwardDuration: 60,
       seekType: 'range',
     });
     flvPlayer.on(flvjs.Events.ERROR, (type, detail) => {
