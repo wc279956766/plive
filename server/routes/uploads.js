@@ -7,7 +7,12 @@ import { startProgress, updateProgress, finishProgress, getProgress, listProgres
   from '../lib/uploadProgress.js';
 import { findMergeCandidates, mergeRecordings, cleanupMerged, DEFAULT_GAP_SEC }
   from '../lib/recordingMerge.js';
-import { statSync } from 'node:fs';
+import { transcodeTo1080p60 } from '../lib/transcoder.js';
+import { resolve, basename, extname } from 'node:path';
+import { statSync, unlinkSync } from 'node:fs';
+import { config } from '../config.js';
+
+const TRANSCODE_BEFORE_UPLOAD = process.env.PLIVE_TRANSCODE !== '0';
 
 const findRecording = db.prepare(`
   SELECT r.*, rm.id AS r_room_id, rm.name AS r_room_name, rm.upload_template_json
@@ -103,6 +108,7 @@ export default async function routes(fastify) {
 
     (async () => {
       let merged = null;
+      let transcodedPath = null;
       try {
         const t0 = Date.now();
         let uploadPath = job.file_path;
@@ -113,13 +119,24 @@ export default async function routes(fastify) {
           });
           uploadPath = merged.flvPath;
         }
+        if (TRANSCODE_BEFORE_UPLOAD) {
+          const tBase = basename(uploadPath, extname(uploadPath));
+          transcodedPath = resolve(config.paths.dataDir, 'transcoded', `${tBase}-1080p60.mp4`);
+          updateProgress(key, { phase: 'transcoding', percent: 0 });
+          await transcodeTo1080p60({
+            input: uploadPath, output: transcodedPath,
+            onProgress: ({ percent }) => updateProgress(key, {
+              phase: 'transcoding', percent: Math.min(percent || 0, 99),
+            }),
+          });
+          uploadPath = transcodedPath;
+        }
         const { uposUri } = await uploadFile(uploadPath, p => updateProgress(key, p));
         const { bvid } = await submitVideo({ uposUri, ...meta });
         const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
         const log = willMerge
           ? `merged ${mergeRecs.map(r => r.id).join(',')} → uploaded in ${elapsed}s, bvid=${bvid}`
           : `uploaded in ${elapsed}s, bvid=${bvid}`;
-        // 所有参与合并的录像都打同一 bvid
         for (const r of mergeRecs) setStatus.run('success', log, bvid, r.id);
         finishProgress(key, { ok: true, bvid });
       } catch (e) {
@@ -128,6 +145,7 @@ export default async function routes(fastify) {
         finishProgress(key, { ok: false, error: msg });
       } finally {
         if (merged) cleanupMerged(merged);
+        if (transcodedPath) { try { unlinkSync(transcodedPath); } catch {} }
       }
     })();
     return { ok: true, willMerge, mergeIds: mergeRecs.map(r => r.id) };

@@ -65,11 +65,12 @@ function fmtEta(p) {
 }
 function phaseLabel(phase) {
   return ({
-    merging:    '合并中',
-    preupload:  '准备',
-    init:       '初始化',
-    uploading:  '传输中',
-    completing: '提交中',
+    merging:     '合并中',
+    transcoding: '转码中',
+    preupload:   '准备',
+    init:        '初始化',
+    uploading:   '传输中',
+    completing:  '提交中',
   })[phase] || phase || '';
 }
 

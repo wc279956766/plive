@@ -7,10 +7,18 @@ import { loadCookies } from '../bilibili/auth.js';
 import { startProgress, updateProgress, finishProgress } from '../lib/uploadProgress.js';
 import { findMergeCandidates, mergeRecordings, cleanupMerged,
          DEFAULT_GAP_SEC } from '../lib/recordingMerge.js';
+import { transcodeTo1080p60 } from '../lib/transcoder.js';
+import { resolve, basename, extname } from 'node:path';
+import { unlinkSync } from 'node:fs';
+import { config } from '../config.js';
 
 // 下播后等待这么久再上传：避免断流抖动 / 主播短暂下线又上播时把单段提前上传走。
 // 期间如果该主播又开播了（房间出现 ended_at IS NULL 的录像），所有该房间 pending 上传一律 defer。
 const COOLDOWN_SEC = 600;   // 10 分钟
+
+// 上传前是否转码到 1080p60（B 站清晰度档需要 ≥60fps 才给 1080P 60帧档）。
+// 默认开。要关闭设 PLIVE_TRANSCODE=0。
+const TRANSCODE_BEFORE_UPLOAD = process.env.PLIVE_TRANSCODE !== '0';
 
 const findLiveInRoom = db.prepare(`
   SELECT id FROM recordings WHERE room_id = ? AND ended_at IS NULL LIMIT 1
@@ -71,6 +79,7 @@ async function processOne() {
   startProgress(progressKey, totalBytes);
 
   let merged = null;
+  let transcodedPath = null;
   try {
     const tmpl = job.upload_template_json ? JSON.parse(job.upload_template_json) : {};
     // 模板上下文用 seed 的元数据（标题/日期取自第一段）
@@ -98,6 +107,20 @@ async function processOne() {
       uploadPath = merged.flvPath;
       console.log(`[uploader] merged ${chain.length} segments → ${uploadPath} (${(merged.sizeBytes/1024/1024).toFixed(1)} MB)`);
     }
+    if (TRANSCODE_BEFORE_UPLOAD) {
+      const tBase = basename(uploadPath, extname(uploadPath));
+      transcodedPath = resolve(config.paths.dataDir, 'transcoded', `${tBase}-1080p60.mp4`);
+      updateProgress(progressKey, { phase: 'transcoding', percent: 0 });
+      console.log(`[uploader] 转码到 1080p60: ${uploadPath} → ${transcodedPath}`);
+      const tres = await transcodeTo1080p60({
+        input: uploadPath, output: transcodedPath,
+        onProgress: ({ percent }) => updateProgress(progressKey, {
+          phase: 'transcoding', percent: Math.min(percent || 0, 99),
+        }),
+      });
+      console.log(`[uploader] 转码完成: ${(tres.sizeBytes/1024/1024).toFixed(1)} MB`);
+      uploadPath = transcodedPath;
+    }
     const { uposUri } = await uploadFile(uploadPath, p => {
       updateProgress(progressKey, p);
       if (p.percent !== undefined && Math.floor(p.percent) % 10 === 0)
@@ -118,6 +141,7 @@ async function processOne() {
     finishProgress(progressKey, { ok: false, error: msg });
   } finally {
     if (merged) cleanupMerged(merged);
+    if (transcodedPath) { try { unlinkSync(transcodedPath); } catch {} }
     running = false;
   }
 }
