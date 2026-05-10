@@ -1,7 +1,6 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import flvjs from 'flv.js';
 import { api } from '../api.js';
 
 const route = useRoute();
@@ -15,56 +14,39 @@ const recording = computed(() =>
 const video = ref(null);
 const duration = ref(0);
 const currentTime = ref(0);
-let flvPlayer = null;
 
-function destroyFlvPlayer() {
-  if (flvPlayer) {
-    try { flvPlayer.pause(); flvPlayer.unload(); flvPlayer.detachMediaElement(); flvPlayer.destroy(); } catch {}
-    flvPlayer = null;
+// 服务端会把 FLV 容器 remux 成 fragmented MP4（不重编码，~50s 完成 11GB），
+// 浏览器原生 <video> 播 mp4，不走 MSE，没有 flv.js 大文件 OOM 问题。
+const proxyState = ref(null);
+let proxyPoller = null;
+
+async function loadProxy(recId) {
+  if (proxyPoller) { clearInterval(proxyPoller); proxyPoller = null; }
+  let st = await api.proxyStatus(recId).catch(() => ({ state: 'missing' }));
+  proxyState.value = st;
+  if (st.state === 'ready') {
+    await nextTick();
+    if (video.value) video.value.src = `/api/recordings/${recId}/proxy`;
+    return;
   }
-  // 关键：detachMediaElement 不释放 MSE source buffer，必须显式清 src + reload
-  // 不然多次切换录像会累积泄漏 MSE 内存，最终 tab OOM。
-  if (video.value) {
+  if (st.state === 'missing') {
+    try { st = await api.proxyGenerate(recId); proxyState.value = st; }
+    catch (e) { proxyState.value = { state: 'error', error: e.message }; return; }
+  }
+  proxyPoller = setInterval(async () => {
+    if (recordingId.value !== recId) {
+      clearInterval(proxyPoller); proxyPoller = null; return;
+    }
     try {
-      video.value.pause();
-      video.value.removeAttribute('src');
-      video.value.load();
+      const s = await api.proxyStatus(recId);
+      proxyState.value = s;
+      if (s.state === 'ready') {
+        clearInterval(proxyPoller); proxyPoller = null;
+        await nextTick();
+        if (video.value) video.value.src = `/api/recordings/${recId}/proxy`;
+      }
     } catch {}
-  }
-}
-
-async function loadVideoSource(url) {
-  destroyFlvPlayer();
-  await nextTick();
-  if (!video.value) return;
-  if (flvjs.isSupported()) {
-    flvPlayer = flvjs.createPlayer({
-      type: 'flv', url, isLive: false, hasAudio: true, hasVideo: true,
-    }, {
-      enableWorker: false,
-      // 极保守缓冲（大文件防 OOM）：缓冲 ~120s 视频量
-      // 大文件（10GB+）防止浏览器内存被打爆：
-      // - lazyLoad 只缓冲未来 3 分钟，seek 时按需 Range 拉
-      // - autoCleanupSourceBuffer 让 MSE 自动丢弃已播放 > 3 分钟的数据
-      // 注意：窗口不能太小，太小会让 MSE buffer 频繁 alloc/free 反而碎片化爆内存。
-      // 180s 是经过实测稳定的值（10-15GB 文件可流畅 seek）。
-      enableStashBuffer: true,
-      lazyLoad: true,
-      lazyLoadMaxDuration: 180,
-      lazyLoadRecoverDuration: 30,
-      autoCleanupSourceBuffer: true,
-      autoCleanupMaxBackwardDuration: 180,
-      autoCleanupMinBackwardDuration: 60,
-      seekType: 'range',
-    });
-    flvPlayer.on(flvjs.Events.ERROR, (type, detail) => {
-      error.value = `flv.js 错误：${type} / ${detail}`;
-    });
-    flvPlayer.attachMediaElement(video.value);
-    flvPlayer.load();
-  } else {
-    video.value.src = url;
-  }
+  }, 2000);
 }
 
 const inMark = ref(null);
@@ -105,14 +87,11 @@ function selectRecording(id) {
   inMark.value = outMark.value = null;
   title.value = '';
   status.value = ''; error.value = '';
-  setTimeout(() => loadVideoSource(`/api/recordings/${id}/stream`), 0);
+  loadProxy(id);
 }
 
 function reloadPlayer() {
-  // 强制释放当前 player + MSE buffer，再重新 attach
-  if (recordingId.value) {
-    setTimeout(() => loadVideoSource(`/api/recordings/${recordingId.value}/stream`), 0);
-  }
+  if (recordingId.value) loadProxy(recordingId.value);
 }
 
 function setIn() { if (video.value) inMark.value = video.value.currentTime; }
@@ -171,12 +150,12 @@ onMounted(async () => {
   const fromQuery = parseInt(route.query.rec, 10);
   if (Number.isInteger(fromQuery) && recordings.value.find(r => r.id === fromQuery)) {
     recordingId.value = fromQuery;
-    setTimeout(() => loadVideoSource(`/api/recordings/${fromQuery}/stream`), 0);
+    loadProxy(fromQuery);
   }
   window.addEventListener('keydown', onKey);
 });
 onUnmounted(() => {
-  destroyFlvPlayer();
+  if (proxyPoller) clearInterval(proxyPoller);
   window.removeEventListener('keydown', onKey);
 });
 </script>
@@ -194,10 +173,26 @@ onUnmounted(() => {
     </header>
 
     <main v-if="recording" class="player-area">
-      <video ref="video"
-             controls
-             @loadedmetadata="onLoadedMetadata"
-             @timeupdate="onTimeUpdate" />
+      <div class="player-wrap">
+        <video ref="video"
+               controls
+               @loadedmetadata="onLoadedMetadata"
+               @timeupdate="onTimeUpdate" />
+        <div v-if="proxyState && proxyState.state !== 'ready'" class="proxy-overlay">
+          <template v-if="proxyState.state === 'generating'">
+            <div class="big">⏳ 正在生成预览…</div>
+            <div class="small muted">{{ (proxyState.percent || 0).toFixed(1) }}% （仅容器 remux，画质不变，~50s 完成）</div>
+            <div class="proxy-bar"><div class="fill" :style="{ width: (proxyState.percent || 0) + '%' }"></div></div>
+          </template>
+          <template v-else-if="proxyState.state === 'missing'">
+            <div class="big">⚙ 准备生成预览…</div>
+          </template>
+          <template v-else-if="proxyState.state === 'error'">
+            <div class="big" style="color:#ff8080">✗ 预览生成失败</div>
+            <div class="small">{{ proxyState.error }}</div>
+          </template>
+        </div>
+      </div>
 
       <div class="time-display">
         <span>{{ fmt(currentTime) }}</span>
@@ -258,7 +253,18 @@ header { display: flex; gap: 12px; align-items: center; }
 header select { flex: 1; max-width: 800px; }
 
 .player-area { display: flex; flex-direction: column; gap: 8px; }
-video { width: 100%; max-height: 60vh; background: #000; border-radius: 4px; }
+.player-wrap { position: relative; }
+video { width: 100%; max-height: 60vh; background: #000; border-radius: 4px; display: block; }
+.proxy-overlay {
+  position: absolute; inset: 0; background: rgba(0,0,0,0.85);
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 12px; border-radius: 4px;
+}
+.proxy-overlay .big { font-size: 18px; font-weight: bold; padding: 0; background: none; }
+.proxy-overlay .small { font-size: 13px; }
+.proxy-bar { width: 60%; max-width: 400px; height: 8px; background: #1a1a1a;
+             border: 1px solid #3c3c3c; border-radius: 3px; overflow: hidden; }
+.proxy-bar .fill { height: 100%; background: #2d8c3c; transition: width .4s ease; }
 .time-display { font-family: monospace; color: #ccc; padding: 0 4px; }
 
 .controls { background: #252525; border: 1px solid #3c3c3c; border-radius: 4px; padding: 12px; }
